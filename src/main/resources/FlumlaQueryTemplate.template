@@ -1,0 +1,252 @@
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Set;
+
+import org.apache.lucene.index.*;
+import org.apache.lucene.queries.function.*;
+import org.apache.lucene.search.*;
+import org.apache.lucene.search.FieldCache.*;
+import org.apache.lucene.util.*;
+
+import org.apache.solr.common.params.*;
+import org.apache.solr.request.SolrQueryRequest;
+import org.apache.solr.schema.*;
+import org.apache.solr.search.function.*;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Strings;
+import com.google.common.collect.Maps;
+
+public class {classname} extends Query {
+	
+	final private static Logger log = LoggerFactory.getLogger({classname}.class);
+	
+	private final static String formula = "{formula}";
+
+	protected Query subQuery;
+	protected SolrParams solrParams;
+	protected SolrQueryRequest req;
+	protected boolean hasKeyword;
+	protected SortedDocValues catalogids;
+	protected int dh_tns;
+	protected static Map<String,FileFloatSource> fileFloatSourceMap = Maps.newHashMap(); 
+	public static boolean initedExternalFileField = false;
+	
+	//平滑系数：1-k/(k+x)
+	protected float k = 20f; 
+	
+//	private final static String simFormula = "(1 - k / (k + score)) * subQueryBoost";
+	public {classname}(){}
+	public {classname}(Query subQuery, SolrQueryRequest req) {
+		this.subQuery = subQuery;
+		this.req = req;
+		this.solrParams = req.getParams();
+        String keyword = solrParams.get("dh_kw", "");
+        if (keyword.isEmpty()) {
+            hasKeyword = false;
+        } else {
+            hasKeyword = true;
+        }
+
+        dh_tns = solrParams.getInt("dh_tns", 0);
+		initedExternalMap();
+	}
+
+	//@Override
+	//public void extractTerms(Set<Term> terms) {
+	//	subQuery.extractTerms(terms);
+	//}
+
+	@Override
+	public Query rewrite(IndexReader reader) throws IOException {
+		subQuery = subQuery.rewrite(reader);
+		return super.rewrite(reader);
+	}
+		
+	@Override
+	public Weight createWeight(IndexSearcher searcher) throws IOException {
+		final Weight subWeight = subQuery.createWeight(searcher);
+		return new Weight() {
+
+			//@Override
+			//public boolean scoresDocsOutOfOrder() {
+			//	return subWeight.scoresDocsOutOfOrder();
+			//}
+			
+			@Override
+			public Scorer scorer(AtomicReaderContext context, boolean scoreDocsInOrder, boolean topScorer, Bits acceptDocs)
+					throws IOException {
+				final Scorer scorer =  (subQuery instanceof BooleanQuery) ? subWeight.scorer(context, scoreDocsInOrder, false, acceptDocs):subWeight.scorer(context, scoreDocsInOrder, topScorer, acceptDocs);
+				//final Scorer scorer = subWeight.scorer(context, scoreDocsInOrder, topScorer, acceptDocs);
+				if (scorer == null) {
+			        return null;
+			    }
+			    
+				/*
+				*auto gen member variable
+				*/
+				{member_variable}
+							    
+				return new Scorer(this) {
+					@Override
+					public int nextDoc() throws IOException {
+						return scorer.nextDoc();
+					}
+					
+					@Override
+					public int docID() {
+						return scorer.docID();
+					}
+					
+					@Override
+					public long cost() {
+						return scorer.cost();
+					}
+					
+					@Override
+					public int advance(int target) throws IOException {
+						return scorer.advance(target);
+					}
+					
+					@Override
+					public int freq() throws IOException {
+						return scorer.freq();
+					}
+
+					//@Override
+					//public boolean score(Collector collector, int max, int firstDocID) throws IOException {
+					//	return 	scorer.score(collector,max,firstDocID);
+					//}
+
+					//@Override
+				    //public void score(Collector collector) throws IOException {
+					//	scorer.score(collector);
+					//}
+					
+					@Override
+					public float score() throws IOException {
+						int doc = scorer.docID();
+						float rawscore = scorer.score();
+						float score = norm(scorer.score());
+						//auto gen local_variable
+						{local_variable}
+
+						//auto gen formula
+						double customscore = {formula};
+						return (float) customscore;
+					}
+				};
+			}
+			
+			@Override
+			public void normalize(float norm, float topLevelBoost) {
+				subWeight.normalize(norm, topLevelBoost);
+			}
+			
+			@Override
+			public float getValueForNormalization() throws IOException {
+				return subWeight.getValueForNormalization();
+			}
+			
+			@Override
+			public Query getQuery() {
+				return {classname}.this;
+			}
+			
+			@Override
+			public Explanation explain(AtomicReaderContext context, int doc) throws IOException {
+			Explanation subExplain = subWeight.explain(context, doc);
+			float rawscore = subExplain.getValue();
+			float score = norm(subExplain.getValue());
+			{member_variable}
+			{local_variable}
+			String explainDesc = formula;
+			{explain}
+			double customscore = {formula};
+				Explanation explanation = new Explanation((float) customscore, "{" + (float) customscore + "=" + explainDesc + "}");
+				explanation.addDetail(subExplain);
+				return explanation;
+			}
+		};
+	}
+	
+	@Override
+	public boolean equals(Object obj) {
+		if(obj instanceof {classname}){
+			return subQuery.equals((({classname}) obj).subQuery);
+		}
+		return false;
+	}
+
+	@Override
+	public String toString(String field) {
+		return subQuery.toString(field);
+	}
+	
+	private final static String simFormula = "(2 - k/(score+k))^2 * subQueryBoost";
+	/**
+	 * 归一化分数
+	 * @param score
+	 * @return
+	 */
+	private final float norm(float score){
+		float s = (2 - k / (k + score));
+		return s * s;
+	}
+	
+	private final float getTsScore(int doc){
+        if (hasKeyword) {
+            BytesRef br = new BytesRef();
+            catalogids.get(doc, br);
+            return solrParams.getFloat(br.utf8ToString(), 1);
+        } else {
+            return 8;
+        }
+	}
+	
+	protected Floats getFloatField(final AtomicReader reader, final String field){
+		Floats f;
+		FileFloatSource ffs = fileFloatSourceMap.get(field);
+		if (ffs != null) {
+			try {
+				final FunctionValues values = ffs.getValues(null, reader.getContext());
+				f = new FieldCache.Floats() {
+					
+					@Override
+					public float get(int docID) {
+						// TODO Auto-generated method stub
+						return values.floatVal(docID);
+					}
+				};
+			} catch (Exception e) {
+				f = FieldCache.Floats.EMPTY;
+				log.warn("ffs getvalue error " + field, e);
+			}
+		} else {
+                try {
+                    f = FieldCache.DEFAULT.getFloats(reader, field, true);
+                } catch (IOException e) {
+                    f = Floats.EMPTY;
+                }
+		}
+		return f;
+	}
+	
+	private void initedExternalMap() {
+		
+		if (!initedExternalFileField) {
+			Map<String, SchemaField> fields = req.getSchema().getFields();
+			Collection<SchemaField> values = fields.values();
+			for (SchemaField schemaField : values) {
+				if(schemaField.getType() instanceof ExternalFileField){
+					log.info("init ExternalFileField " + schemaField.getName());
+					fileFloatSourceMap.put(schemaField.getName(), ((ExternalFileField)schemaField.getType()).getFileFloatSource(schemaField));
+				}
+			}
+			initedExternalFileField = true;
+		}
+	}
+}	
